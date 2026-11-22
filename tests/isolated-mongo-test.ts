@@ -45,10 +45,12 @@ const port = await new Promise<number>((resolve, reject) => {
 });
 const uri = `mongodb://127.0.0.1:${port}/?directConnection=true`;
 const databaseName = `niketon_disposable_${randomBytes(8).toString("hex")}`;
-const mongod = spawn(process.env.MONGOD_TEST_BINARY || "mongod", [
+const mongodArgs = [
   "--dbpath", data, "--port", String(port), "--bind_ip", "127.0.0.1", "--replSet", "niketonlocal",
-  "--nounixsocket", "--wiredTigerCacheSizeGB", "0.25", "--logpath", path.join(scratch, "mongod.log"),
-], { stdio: "ignore" });
+  ...(process.platform === "win32" ? [] : ["--nounixsocket"]),
+  "--wiredTigerCacheSizeGB", "0.25", "--logpath", path.join(scratch, "mongod.log"),
+];
+const mongod = spawn(process.env.MONGOD_TEST_BINARY || "mongod", mongodArgs, { stdio: "ignore" });
 let spawnError: Error | undefined;
 mongod.once("error", (error) => { spawnError = error; });
 let bootstrap: MongoClient | undefined, other: MongoClient | undefined, appClient: MongoClient | undefined;
