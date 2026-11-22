@@ -1,0 +1,49 @@
+# Implementation and verification report — reconstructed source
+
+## Release status: source handover, not live-order ready
+
+This source was reconstructed from a ZIP and has **not** been deployed. Production checkout remains held. Online cancellation is held in all environments because the owner selected manual review for coupon orders and uncertain customer accounting; no permission-checked in-app staff review, reconciliation or refund workflow is complete. Do not remove these holds without the missing work, real-service staging and independent review.
+
+Vercel project metadata identified `dev-marufbillah/niketon-mart` `main` at `892500c4d5a335dd34ecbc9ee5680f26f40dd944`. Read-only structural comparison found a substantially different Better Auth/Mongoose application, database schema and remote-only features. It was not a semantic or migration audit, and no integration/merge was performed. Do not replace remote `main` or connect this source to its live database. See `docs/GITHUB_MAIN_COMPARISON.md`. No Git push, Vercel settings change, deployment, Atlas write, real-service staging or backup/restore test was performed. Git push must precede any Vercel settings change or deployment.
+
+## Changes in this source
+
+- The existing centralized admin has a clearer responsive workspace, permission-filtered searchable navigation, real-data dashboard, mobile order/customer/resource cards, settings section links and more visible form feedback. Inventory's low-stock link now filters correctly; rejected stale quick-stock edits refresh the displayed balance. Existing server guards and actions remain authoritative. Details: `ADMIN_DESIGN_UPDATE_BANGLA.md`.
+- Customer password recovery and verified-email changes are implemented for eligible verified password accounts using expiring, single-use, hashed links and versioned session invalidation. Google-linked customers must disconnect Google before changing email. Local unit and selected browser checks passed; the complete browser suite and real email/Google/Atlas remain unverified. An admin customer-form DTO excludes credential/token hashes.
+- Catalogue cards, search and wishlists label base/from prices or show review for ambiguous combinations; stale-cart and full cross-surface browser coverage remain incomplete. Empty campaign dates no longer invent a weekly deadline; existing admin-authored records are not rewritten.
+- Customer-only Google OAuth using Google's official sign-in asset, state, nonce, PKCE, verified email and explicit linking to an existing password account; no staff access via Google. Real provider testing is outstanding.
+- Admin-managed taxonomy drives the responsive Featured Categories, English navigation, Dates varieties as filters, family-scoped products and facets, and Shop's full catalogue. Blog is in the footer; About Us is the last navigation item. Earlier focused browser results are listed below.
+- Experimental Mongo checkout uses transactional order, stock, ledger, coupon and customer writes; server-derived request fingerprints prevent reuse of a retry key for a different request. It validates stored BDT amounts, taxes, delivery fees, preparation charges, customer aggregates and coupon counters. It is not production-certified. Legacy missing coupon counters and invalid customer totals require review instead of being assumed to be zero; newly created coupons start with a zero counter.
+- Customer and admin entry points cannot cancel online; attempting cancellation does not modify order, stock, coupon, customer or payment data. Coupon and customer accounting decisions and refund implementation remain unresolved. Paid/historical orders require review.
+- A read-only startup tripwire refuses known incompatible Better Auth collections and incompatible IDs before index creation. It cannot certify any database as compatible and does not replace a backup, schema review or migration plan.
+- Checkout draft storage is scoped to the signed-in customer; old unscoped draft/address keys are preserved but are not automatically assigned to another account. Saved addresses come from the current account; their existing account page manages deletion.
+- Protected owner, centralized admin/RBAC, server-side pricing and `.env.local`/private-data exclusions remain. Unknown or historical non-BDT amounts must not be relabelled or converted without approval.
+
+## Verification and limits
+
+| Check | Result |
+|---|---|
+| Latest application typecheck and unit tests | Passed; **66/66 unit tests**. |
+| Local MongoDB replica-set tests | **35 synthetic groups passed** on localhost MongoDB 7.0.16 before the subsequent Google-link/email-change race probe was added. They include rollback, stock/coupon races, retry conflicts, customer-security CAS and the startup tripwire. No Atlas connection. The newer probe, actual Mongo-backed browser/server-action races, distributed deployment and legacy data remain untested. |
+| Checkout privacy browser | **2/2 focused groups passed** using a disposable local file store: legacy unscoped data is not adopted, same-customer drafts survive reload and switching accounts does not show another customer's draft/address. |
+| Checkout browser | A focused local run passed preparation pricing, refusal of a forged expected total and ignoring browser-supplied prices. Another selected signed-in checkout test in that run timed out because its static synthetic email had been registered by an earlier failed run; the complete test remains to be rerun on a fresh store. An earlier run using `127.0.0.1` had blocked Next.js dev HMR/hydration and failed. This is not an end-to-end Mongo or production test. |
+| Customer-security browser | Three groups passed against synthetic file storage and mock mail; the run was interrupted during further source edits. Full browser coverage and real providers remain unverified. |
+| Admin design browser | **11 focused groups passed** on a disposable local file store, including owner/limited-role navigation, guards, settings save, mobile reorder and drawer keyboard behavior. Seven representative screens were checked for whole-page overflow at 320, 390, 768 and 1440px. This is not a complete admin or accessibility audit. |
+| Inventory admin browser | **5 focused groups passed** on another disposable local file store, including product save, stale stock rejection and displayed balance refresh, stock/ledger adjustments and variation hold. No real MongoDB action or production test. |
+| Lint | Current workspace: 0 errors and **14 warnings**. |
+| Isolated build | Separate source copy with synthetic file storage and external providers disabled passed. This is not production or Atlas certification. |
+| Previous focused browser checks | Earlier source: Dates **9**, storefront scope **6**, scroll/navigation **8**, selected admin-security **6** and category/media **5** groups passed on disposable stores. Real Google, Blob, email and payment services were not tested. |
+| Full browser suite | No complete current pass: earlier full run passed 16/30; a later attempt stopped after failures/timeouts. Focused reruns do not prove the whole suite passes. |
+| npm audit | Most recent run: **8 moderate**, 0 high/critical advisories; no unreviewed forced dependency change. |
+
+## Required before live ordering
+
+1. Confirm the correct remote, re-fetch latest `main`, preserve its history and remote-only features, and develop an approved feature/data migration plan. Detailed comparison: `docs/GITHUB_MAIN_COMPARISON.md`.
+2. Obtain a private backup of live DB/media and prove a separate restore. Review identities, owner, historic orders, currency, coupon/customer accounting, indices and historical corporate data. Do not delete, relabel or silently merge anything without approval. Rotate the Mongo credential previously exposed in chat.
+3. Implement and independently review a permission-checked manual cancellation/reconciliation/refund process. Complete checkout and race handling; test actual action flows and failures on an isolated staging replica set with multiple instances. Review variation-price displays, historical data and payment flows. Keep current holds.
+4. After an approved non-force Git push, the owner configures Vercel/Google/Blob/Resend secrets personally and separately tests real services. Provider keys alone do not create a payment gateway. Do not send secrets in chat or commit them.
+5. Run `npm ci`, `npm run typecheck`, `npm run test:unit`, `npm run lint`, `npm audit`, isolated `npm run build`, and the guarded browser/Mongo test suites; investigate outstanding failures and advisories. Configure real products, images, prices, stock, tax, delivery and legal/contact information.
+
+## Private data
+
+The release ZIP excludes `.env.local` and other real env files, local databases, runtime uploads, private archives, dependency folders and generated build/cache files. `.gitignore` cannot remove secrets already tracked in Git or its history. A prior failed unit run wrote synthetic fixtures to this workspace's local `.data/db.json`; it was preserved and excluded, not Atlas. The historical corporate archive remains private and was not deleted or included. See `PROJECT_STATUS_BANGLA.md`, `NEXT_STEPS_BANGLA.md`, `REMAINING_TASKS.md`, `SECURITY_AUDIT.md` and `GITHUB_UPLOAD_BANGLA.md`.

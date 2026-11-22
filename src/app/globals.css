@@ -1,0 +1,213 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------
+   Grocery — Design System tokens
+   Single source of truth for colour, type, radius, shadow and motion.
+   Every future page (Home Grocery, Fresh Market, Admin) consumes
+   these tokens so the brand stays consistent.
+------------------------------------------------------------------- */
+@theme {
+  --font-sans: var(--font-plus-jakarta), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* Brand green */
+  --color-brand-50: #f1f8f4;
+  --color-brand-100: #e3f2ea;
+  --color-brand-200: #c5e6d5;
+  --color-brand-300: #98d3b9;
+  --color-brand-400: #5cb990;
+  --color-brand-500: #2f9c70;
+  --color-brand-600: #1b8057;
+  --color-brand-700: #166b49;
+  --color-brand-800: #13563b;
+  --color-brand-900: #0f4631;
+
+  /* Brand yellow */
+  --color-accent-50: #fefaea;
+  --color-accent-100: #fdf3c6;
+  --color-accent-200: #fbe792;
+  --color-accent-300: #fad95c;
+  --color-accent-400: #f9ce33;
+  --color-accent-500: #f8c519;
+  --color-accent-600: #d8a70c;
+  --color-accent-700: #a97f0a;
+
+  /* Neutrals */
+  --color-ink-900: #1c1c1c;
+  --color-ink-800: #242424;
+  --color-ink-700: #3c3c3c;
+  --color-ink-600: #595959;
+  --color-ink-500: #6f6f6f;
+  --color-ink-400: #8b8b8b;
+  --color-ink-300: #adadad;
+  --color-line: #ececec;
+  --color-surface: #f5f5f5;
+  --color-surface-2: #fafafa;
+  --color-star: #ffb800;
+
+  --radius-card: 1rem;
+  --radius-xl2: 1.25rem;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 10px 28px -16px rgba(16, 24, 40, 0.16);
+  --shadow-lift: 0 22px 48px -22px rgba(16, 24, 40, 0.28);
+  --shadow-menu: 0 28px 64px -24px rgba(16, 24, 40, 0.3);
+  --shadow-cta: 0 12px 24px -12px rgba(27, 128, 87, 0.55);
+
+  --breakpoint-xs: 26rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Route changes should not animate from the old page's scroll position.
+       Pagination explicitly requests smooth scrolling where it is useful. */
+    scroll-behavior: auto;
+  }
+
+  body {
+    background-color: #ffffff;
+    color: var(--color-ink-800);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-300);
+    color: var(--color-brand-900);
+  }
+
+  h1, h2, h3, h4, h5 {
+    color: var(--color-ink-800);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@utility container-page {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  padding-inline: 1rem;
+  @media (width >= 40rem) {
+    padding-inline: 1.5rem;
+  }
+  @media (width >= 64rem) {
+    padding-inline: 2rem;
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Faint grocery doodle backdrop used by the hero + newsletter */
+@utility grocery-pattern {
+  background-image: url("/images/pattern.svg");
+  background-repeat: repeat;
+  background-size: 340px 340px;
+}
+
+@utility grain-fade {
+  mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@utility animate-float-slow {
+  animation: float-slow 7s ease-in-out infinite;
+}
+
+@utility animate-fade-up {
+  animation: fade-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-toast-in {
+  animation: toast-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ------------------------------------------------------------------
+   Dual price slider (Shop filters)
+   Two overlaid range inputs share a single track; the thumbs stay
+   grabbable while the track itself ignores pointer events.
+------------------------------------------------------------------- */
+@utility range-input {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  width: 100%;
+  height: 1.25rem;
+  margin: 0;
+}
+
+@utility range-input-thumb {
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    pointer-events: auto;
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: var(--color-brand-600);
+    border: 3px solid #fff;
+    box-shadow: 0 1px 4px rgba(16, 24, 40, 0.35);
+    cursor: grab;
+    transition: transform 120ms ease;
+  }
+  &::-webkit-slider-thumb:active {
+    transform: scale(1.12);
+    cursor: grabbing;
+  }
+  &::-moz-range-thumb {
+    pointer-events: auto;
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: var(--color-brand-600);
+    border: 3px solid #fff;
+    box-shadow: 0 1px 4px rgba(16, 24, 40, 0.35);
+    cursor: grab;
+  }
+  &:focus-visible::-webkit-slider-thumb {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+}

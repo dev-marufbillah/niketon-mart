@@ -1,0 +1,19 @@
+node_modules
+.next
+out
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+# Never commit local credentials; already-tracked files need separate removal.
+.env.local
+.env*.local
+
+# admin content store (runtime data)
+.data
+
+# Credentials, private data, archives and runtime uploads must never be committed.
+.env
+.env.*
+!.env.example
+archive/
+public/uploads/

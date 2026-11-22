@@ -1,0 +1,26 @@
+# Mongo transaction ও staging — নিরাপদ পর্যালোচনা
+
+**এটি production release নির্দেশনা নয়। Production checkout এবং online cancellation বন্ধ রাখুন।** পরীক্ষামূলক transaction কোডের localhost test পাস করলেও বাস্তব গ্রাহকের টাকা বা অর্ডারের জন্য সেটি অনুমোদিত নয়। কোনো Vercel setting বা deploy করার আগে ব্যবহারকারীর নির্দেশমতো inspected `main` branch-এ Git push সম্পন্ন হতে হবে।
+
+## সর্বশেষ পরীক্ষার সীমা
+
+`npm run test:mongo:local` নিজের temporary database directory ও localhost-only MongoDB replica set তৈরি করে; একটি locally installed `mongod` 6.0+ দরকার (7.0.16 দিয়ে পরীক্ষা হয়েছে)। এটি caller-এর Atlas URI ব্যবহার করে না। ৩২টি synthetic probe group পাস করেছে; তার মধ্যে পরীক্ষামূলক checkout, খারাপ অঙ্ক/counter refusal, retry conflict, stock/coupon/product transaction, failure rollback এবং manual cancellation hold আছে। এটি Atlas, বাস্তব action race, network/instance failure বা production audit নয়। আগের ৫টি inventory browser group পৃথক synthetic file store-এ হয়েছিল; সেটি Mongo concurrency নয়।
+
+## Index ও startup বিষয়ে সতর্কতা
+
+- Vercel-linked `dev-marufbillah/niketon-mart` `main`-এর Better Auth/Mongoose data ও এই ZIP ভিন্ন। Read-only compatibility tripwire পরিচিত foreign collection বা shared collection-এর অচেনা ID পেলে index তৈরির আগে বন্ধ করে, কিন্তু সব incompatible data ধরতে পারবে এমন নিশ্চয়তা নয়। Backup, schema/identity/currency review ও অনুমোদিত migration ছাড়া কোনো live DB-তে চালাবেন না। `GITHUB_MAIN_COMPARISON.md` দেখুন।
+- Mongo connection শুরু হলে `admin_users`-এর email, `customers`-এর registered email/Google subject ও `categories`-এর featured-primary-navigation সংক্রান্ত unique index তৈরি করার চেষ্টা হয়। এগুলো **database mutation**, পরীক্ষামূলক order index-এর flag বন্ধ থাকলেও ঘটতে পারে। Database initialization অন্য write/seed-ও করতে পারে। অজানা বা live database-এ এই source চালানো নিরাপদ ধরে নেবেন না।
+- `NIKETON_PREPARE_TRANSACTION_INDEXES=1` দিলে পরীক্ষামূলক checkout-এর জন্য `orders.number`-এর এবং `(customerId, idempotencyKey)`-এর দুটি partial unique index তৈরি করার চেষ্টা হয়। এই flag **কেবল ব্যক্তিগতভাবে চিহ্নিত, পর্যালোচিত ও disposable staging-এর জন্য**, live checkout চালু করার সুইচ নয়। সেট না করলে এই order indexes স্বয়ংক্রিয়ভাবে তৈরি করা হয় না।
+- পুরোনো duplicate order number/customer-retry key, malformed বা case-duplicate registered identity এবং একাধিক featured category থাকলে index ব্যর্থ হতে পারে। এক index সফল হওয়ার পর অন্যটি ব্যর্থ হলে কিছু index তৈরি অবস্থায় থাকতে পারে। Mongo version/permission-ও গুরুত্বপূর্ণ। **কখনও নিজে থেকে record merge, order renumber, currency পরিবর্তন, index drop বা history delete করবেন না।** Private backup ও ডেটা-মালিকের অনুমোদন নিয়ে সমস্যা পর্যালোচনা করুন।
+
+## আলাদা staging-এর পরিকল্পনা
+
+1. আগে সঠিক live repository, Vercel revision, database ও media store শনাক্ত করুন। নির্ভরযোগ্য private backup নিন এবং অন্য জায়গায় restore test করুন। `_meta`, protected owner, identity/category/order conflict, historical currency ও corporate archive পর্যালোচনা করুন। Backup ও restore যাচাই ছাড়া live database-এ startup বা index তৈরি নয়।
+2. পূর্বে chat-এ প্রকাশিত Mongo credential revoke/rotate করুন। Owner অনুমোদিত **নতুন, খালি, বিচ্ছিন্ন test database** এবং সেখানেই সীমাবদ্ধ test-only ব্যবহারকারী প্রস্তুত করুন। নাম নিশ্চিত ও emptiness যাচাই ছাড়া write করবেন না; সন্দেহ থাকলে থামুন। আগে উল্লিখিত prospective test নামটি কখনও checked বা written হয়নি। Credentials নিরাপদ private environment-এ রাখুন, chat/Git/ZIP/log-এ নয়।
+3. Staging-এ প্রয়োজনীয় Mongo replica-set support ও version, access scope এবং দুটি index definition/data conflict যাচাই করে স্বাধীন অনুমোদনের পর পরীক্ষামূলক index প্রস্তুতি বিবেচনা করুন। কোনো index আগে থেকে রয়ে গেছে কি না পরীক্ষার পর নিজে inspect করুন; ব্যর্থতাকে silently repair করবেন না।
+4. আসল action/API ও একাধিক application instance দিয়ে checkout/variant edits, stock adjustments, coupon edits/deletes, payment/dispatch/cancellation, failure injection, idempotent retries ও recovery পরীক্ষা করতে হবে। Customer authorization এবং একই order-এর competing mutation যাচাই করুন। যতক্ষণ না শেষ ও independently reviewed, production checkout hold থাকবে।
+5. মালিক coupon-যুক্ত cancellation ও অনিশ্চিত customer aggregate-এর জন্য manual review বেছে নিয়েছেন। এই source-এ staff-র authenticated/permission-checked review, প্রতি অর্ডারের accounting সিদ্ধান্ত ও বাস্তব refund/payment reconciliation এখনও তৈরি নয়; তাই সব online cancellation held এবং কোনো automatic stock/coupon/customer পরিবর্তন নয়। Historical order ও বাস্তব action/ledger race review বাকি। Multi-variation group product-এর detail ও quote এখন hold; cards, search ও wishlist-এ base-price presentation এখনও review করা দরকার।
+6. আলাদা বাস্তব staging-এ Google sign-in/link, Vercel Blob upload/retrieval/deletion, verified-domain admin invitation/reset email, backup/restore, monitoring, shared rate limiting ও security test করুন। Card/CVV/PIN/OTP কখনও সংগ্রহ করবেন না। Gateway তৈরি ও provider verification ছাড়া credential দিলেই payment কার্যকর হয় না।
+7. সব blocker, পূর্ণ browser regression এবং independent review শেষ হলে তবেই মালিকের আলাদা অনুমোদনে controlled release plan তৈরি করুন। Live database-এর কোনো currency conversion, corporate-data deletion বা irreversible migration-এর জন্য সুনির্দিষ্ট আলাদা অনুমোদন আবশ্যক।
+
+বিস্তারিত `REMAINING_TASKS.md`, `PROJECT_STATUS_BANGLA.md`, `IMPLEMENTATION_REPORT.md` ও `SECURITY_AUDIT.md` দেখুন।

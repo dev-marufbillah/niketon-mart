@@ -1,0 +1,312 @@
+/** Destructive date-family browser checks. Only run against a marked disposable local store. */
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { chromium } from "playwright";
+import sharp from "sharp";
+
+const base = process.env.E2E_BASE_URL || "http://localhost:3000";
+const url = new URL(base);
+if (url.protocol !== "http:" || !["localhost", "127.0.0.1"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password) throw new Error("Only a local test server is allowed.");
+if (!process.env.E2E_DATA_DIR || !process.env.E2E_OWNER_PASSWORD) throw new Error("Set the isolated test directory and owner password.");
+const data = await fs.realpath(process.env.E2E_DATA_DIR);
+assert.equal((await fs.readFile(path.join(data, ".niketon-e2e-disposable"), "utf8")).trim(), "niketon-mart-e2e-disposable");
+const safety = await fetch(`${base}/api/e2e/safety`, { cache: "no-store" });
+assert.equal(safety.status, 200);
+const handshake = await safety.json();
+assert.equal(handshake.isolated, true);
+assert.equal(handshake.storeHash, createHash("sha256").update(data).digest("hex"));
+
+const readDB = async () => JSON.parse(await fs.readFile(path.join(data, "db.json"), "utf8"));
+const waitForDB = async (predicate, label) => {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const db = await readDB();
+    const value = predicate(db.collections);
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Timed out waiting for database: ${label}`);
+};
+const ready = async (page, target) => {
+  await page.bringToFront();
+  await page.goto(`${base}${target}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.waitForTimeout(900);
+};
+const log = (text) => console.log(`PASS ${text}`);
+const screenshotDir = process.env.E2E_SCREENSHOT_DIR;
+if (screenshotDir) await fs.mkdir(screenshotDir, { recursive: true });
+const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--renderer-process-limit=4"] });
+const pageErrors = [];
+try {
+  const adminContext = await browser.newContext({ viewport: { width: 1366, height: 850 } });
+  let page = await adminContext.newPage();
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await ready(page, "/");
+  const primary = page.locator('nav[aria-label="Primary"]');
+  const navLabels = () => primary.locator("ul > li > a").allTextContents();
+  assert.deepEqual((await navLabels()).map((text) => text.trim()), ["Home", "Shop", "Categories", "Fresh Market", "Grocery", "Dates", "About Us"]);
+  assert.equal(await primary.getByRole("link", { name: "Blogs", exact: true }).count(), 0);
+  assert.equal(await page.locator("footer").getByRole("link", { name: "Blog", exact: true }).count(), 1);
+  for (const width of [1024, 1100, 1280, 1366, 1600]) {
+    await page.setViewportSize({ width, height: 850 });
+    await page.waitForTimeout(150);
+    const bounds = await primary.evaluate((nav) => {
+      const list = nav.querySelector("ul"), last = [...list.querySelectorAll("a")].at(-1);
+      const l = list.getBoundingClientRect(), r = last.getBoundingClientRect();
+      return { overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, visible: r.left >= l.left - 1 && r.right <= l.right + 1, rect: [r.left, r.right, l.left, l.right] };
+    });
+    assert(!bounds.overflow && bounds.visible, `desktop navigation is clipped at ${width}: ${JSON.stringify(bounds)}`);
+  }
+  await page.setViewportSize({ width: 1366, height: 850 });
+  await primary.getByRole("link", { name: "Dates", exact: true }).click();
+  await page.waitForURL(/\/grocery\?category=dates$/, { timeout: 30_000 });
+  assert.equal(await page.getByRole("region", { name: "Dates subcategories" }).count(), 0, "illustrated Dates cards are replaced by filters");
+  const filters = page.locator('aside[aria-label="Product filters"]');
+  const names = ["Ajwa", "Medjool", "Mabroom", "Safawi", "Sukkari"];
+  for (const name of names) assert.equal(await filters.getByLabel(`Dates › ${name}`, { exact: true }).count(), 1, name);
+  assert.equal(await filters.getByLabel("Dates", { exact: true }).isChecked(), true);
+  assert.equal(await filters.getByLabel("Fresh Fish", { exact: true }).count(), 0, "Dates must not inherit unrelated department facets");
+  assert.equal(await page.locator("main article[data-product-id]").count(), 0, "taxonomy must not fabricate date products");
+  assert.equal(await page.getByText("No products in this category yet", { exact: true }).count(), 1);
+  if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, "dates-desktop.png"), fullPage: true });
+  await page.locator("#shop-sort-desktop").selectOption("price-asc");
+  await filters.getByLabel("Dates › Ajwa", { exact: true }).check();
+  await page.waitForURL(/category=dates-ajwa.*sort=price-asc.*scope=dates/, { timeout: 10_000 });
+  assert.equal(await filters.getByLabel("Dates", { exact: true }).isChecked(), false, "selecting a variety must refine rather than include all Dates");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await filters.getByLabel("Dates › Ajwa", { exact: true }).waitFor();
+  assert.equal(await filters.getByLabel("Dates › Ajwa", { exact: true }).isChecked(), true);
+  assert.equal(await filters.getByLabel("Fresh Fish", { exact: true }).count(), 0);
+  await primary.getByRole("link", { name: "Grocery", exact: true }).click();
+  await page.waitForURL(/\/grocery$/, { timeout: 30_000 });
+  await page.goBack({ waitUntil: "domcontentloaded" });
+  await page.waitForURL(/category=dates-ajwa.*scope=dates/, { timeout: 30_000 });
+  await page.getByRole("heading", { name: "Dates", exact: true }).waitFor({ timeout: 30_000 });
+  assert.equal(await filters.getByLabel("Dates › Ajwa", { exact: true }).isChecked(), true);
+  log("desktop order, editable variety filters, zero fabricated products, scoped reload and browser Back");
+
+  for (const width of [320, 360, 390, 767, 768]) {
+    await page.setViewportSize({ width, height: 844 }); await ready(page, "/");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `mobile home overflow at ${width}`);
+    await page.getByRole("button", { name: "Open menu" }).click();
+    const mobile = page.getByRole("dialog", { name: "Menu" });
+    const nav = mobile.getByRole("navigation", { name: "Mobile" });
+    const labels = (await nav.locator("ul > li > a").allTextContents()).map((text) => text.trim());
+    assert.deepEqual(labels, ["Home", "Shop", "Categories", "Fresh Market", "Grocery", "Dates", "About Us"]);
+    await nav.getByRole("link", { name: "Dates", exact: true }).click();
+    await page.waitForURL(/\/grocery\?category=dates$/, { timeout: 30_000 });
+    assert.equal(await page.locator('aside[role="dialog"][aria-label="Menu"]').locator("..").getAttribute("aria-hidden"), "true");
+    await page.getByRole("button", { name: /Filters/ }).first().click();
+    const mobileFilters = page.getByRole("dialog", { name: "Product filters" });
+    await mobileFilters.getByLabel("Dates › Ajwa", { exact: true }).waitFor();
+    assert.equal(await mobileFilters.getByLabel("Fresh Fish", { exact: true }).count(), 0);
+    await mobileFilters.getByRole("button", { name: "Close filters" }).click();
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `mobile category overflow at ${width}`);
+    if (screenshotDir && width === 390) await page.screenshot({ path: path.join(screenshotDir, "dates-mobile.png"), fullPage: true });
+  }
+  log("mobile menu order and close-on-navigation; 320–768px scoped variety filters stay contained");
+
+  await page.setViewportSize({ width: 1366, height: 850 });
+  await ready(page, "/admin/login");
+  const login = page.locator("form").filter({ has: page.getByRole("button", { name: "Sign In", exact: true }) });
+  await login.locator('input[name="email"]').fill("marufsalauddin76@gmail.com");
+  await login.locator('input[name="password"]').fill(process.env.E2E_OWNER_PASSWORD);
+  await login.getByRole("button", { name: "Sign In", exact: true }).click();
+  await page.waitForURL(/\/admin$/, { timeout: 30_000 });
+  await ready(page, "/admin/catalogue/taxonomy");
+  let categoriesPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Categories", exact: true }) });
+  let categoryForm = categoriesPanel.locator("form");
+  await categoryForm.getByLabel("New category name").fill("Barhi");
+  await categoryForm.getByLabel("Parent category (optional)").selectOption("dates");
+  await categoryForm.getByLabel("Show on homepage").uncheck();
+  const image = await sharp({ create: { width: 32, height: 32, channels: 3, background: "#d4e8db" } }).png().toBuffer();
+  await categoryForm.locator('input[type="file"]').setInputFiles({ name: "test-category.png", mimeType: "image/png", buffer: image });
+  await categoryForm.getByAltText("Category image preview").waitFor({ timeout: 30_000 });
+  const capturePromise = page.waitForRequest((request) => request.method() === "POST" && Boolean(request.headers()["next-action"]) && Boolean(request.postData()?.includes("Barhi")), { timeout: 30_000 });
+  await categoryForm.getByRole("button", { name: "Add", exact: true }).click();
+  const captured = await capturePromise;
+  const created = await waitForDB((c) => c.categories.find((entry) => entry.name === "Barhi"), "Barhi category");
+  assert.equal(created.parentId, "dates");
+  assert(created.image.startsWith("/uploads/categories/"));
+  assert.equal(created.visible, true);
+  assert.equal(created.showInNavigation, true);
+  const replayHeaders = Object.fromEntries(["next-action", "content-type", "origin", "accept"].filter((key) => captured.headers()[key]).map((key) => [key, captured.headers()[key]]));
+  const anonymous = await browser.newContext();
+  const denied = await anonymous.request.post(captured.url(), { headers: replayHeaders, data: captured.postDataBuffer() });
+  const deniedBody = await denied.text();
+  assert(!denied.ok() || /sign in/i.test(deniedBody), "anonymous category action replay must fail");
+  assert.equal((await readDB()).collections.categories.filter((entry) => entry.name === "Barhi").length, 1);
+  await anonymous.close();
+  log("admin creates a real child category with an uploaded image; anonymous write replay is denied");
+
+  await ready(page, "/admin/catalogue/products/new");
+  const productForm = page.locator("form").filter({ has: page.getByRole("button", { name: "Create product", exact: true }) });
+  assert.equal(await productForm.getByText("No images yet", { exact: false }).count(), 1, "new products must not default to an unrelated photograph");
+  assert.match(await productForm.getByLabel("Category / subcategory").locator(`option[value="${created.id}"]`).innerText(), /Dates\s*›\s*Barhi/);
+  await productForm.getByLabel("Category / subcategory").selectOption(created.id);
+  await productForm.getByLabel("Product name").fill("E2E Barhi Dates");
+  await productForm.getByLabel("Description", { exact: false }).fill("Disposable test product for date category filtering.");
+  await productForm.getByLabel(/Sale price/).fill("520");
+  await productForm.getByLabel("Stock (units)").fill("9");
+  await productForm.getByRole("button", { name: "Create product", exact: true }).click();
+  await productForm.getByRole("alert").getByText("A product image is required.").waitFor({ timeout: 30_000 });
+  const pathInput = productForm.getByLabel("Add image by path or URL");
+  await pathInput.fill("/images/category-placeholder.svg"); await pathInput.press("Enter");
+  await productForm.getByRole("button", { name: "Remove image 1" }).waitFor();
+  await productForm.getByRole("button", { name: "Remove image 1" }).click();
+  assert.equal(await productForm.getByText("No images yet", { exact: false }).count(), 1);
+  await productForm.getByRole("button", { name: "Create product", exact: true }).click();
+  await productForm.getByRole("alert").getByText("A product image is required.").waitFor();
+  await pathInput.fill("blob:https://example.invalid/test"); await pathInput.press("Enter");
+  await productForm.getByRole("button", { name: "Create product", exact: true }).click();
+  await productForm.getByRole("alert").getByText("Use an uploaded image", { exact: false }).waitFor();
+  await productForm.getByRole("button", { name: "Remove image 1" }).click();
+  await pathInput.fill("/images/category-placeholder.svg"); await pathInput.press("Enter");
+  // A safe first photo must not hide an embedded second gallery entry.
+  await pathInput.fill("data:image/png;base64,ZmFrZQ=="); await pathInput.press("Enter");
+  await productForm.getByRole("button", { name: "Create product", exact: true }).click();
+  await productForm.getByRole("alert").getByText("Use an uploaded image", { exact: false }).waitFor();
+  await productForm.getByRole("button", { name: "Remove image 2" }).click();
+  await productForm.getByRole("button", { name: "Create product", exact: true }).click();
+  await page.waitForURL(/\/admin\/catalogue\/products$/, { timeout: 30_000 });
+  const product = await waitForDB((c) => c.products.find((entry) => entry.name === "E2E Barhi Dates"), "test product");
+  assert.equal(product.categoryId, created.id);
+  assert.equal(product.price, 520);
+  assert.equal(product.stock, 9);
+  assert.equal(product.image, "/images/category-placeholder.svg");
+  log("product form exposes parent › child, requires a deliberate image, and persists the selected category, price and stock");
+
+  // Keep the isolated admin and guest contexts but only one page open at a
+  // time: small CI machines can otherwise throttle the inactive renderer.
+  await page.close();
+  const guest = await browser.newContext({ viewport: { width: 1366, height: 850 } });
+  let shop, shopFilters;
+  const openShop = async (target) => {
+    shop = await guest.newPage(); shop.on("pageerror", (error) => pageErrors.push(error.message));
+    await ready(shop, target);
+    shopFilters = shop.locator('aside[aria-label="Product filters"]');
+  };
+  const openAdmin = async () => {
+    page = await adminContext.newPage(); page.on("pageerror", (error) => pageErrors.push(error.message));
+    await ready(page, "/admin/catalogue/taxonomy");
+    categoriesPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Categories", exact: true }) });
+    categoryForm = categoriesPanel.locator("form");
+  };
+  const barhi = () => shopFilters.getByLabel(/Dates › Barhi/);
+  await openShop("/grocery?category=dates");
+  await barhi().waitFor();
+  assert.match(await barhi().locator("..").innerText(), /1/, "category count reflects the real product");
+  assert.equal(await shop.getByRole("region", { name: "Dates subcategories" }).count(), 0);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1);
+  assert.match(await shop.locator('main article[data-product-id]').first().innerText(), /E2E Barhi Dates/);
+  await ready(shop, "/grocery?category=dates&q=nonexistent-test-term");
+  assert.equal(await shop.getByText("No products match these filters", { exact: true }).count(), 1);
+  assert.equal(await shop.getByText("No products in this category yet", { exact: true }).count(), 0);
+  await ready(shop, "/grocery?category=dates");
+  await barhi().check();
+  await shop.waitForURL(new RegExp(`category=${encodeURIComponent(created.id)}.*scope=dates`), { timeout: 30_000 });
+  assert.equal(await shopFilters.locator("#filters-category-dates").isChecked(), false);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1);
+  await barhi().uncheck();
+  await shopFilters.getByLabel("Dates › Ajwa", { exact: true }).check();
+  await shop.waitForURL(/category=dates-ajwa.*scope=dates/, { timeout: 30_000 });
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 0, "sibling variety must not show Barhi product");
+  await shopFilters.getByRole("button", { name: "Clear all", exact: true }).click();
+  await shop.waitForURL(/\/grocery\?scope=dates$/, { timeout: 30_000 });
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1, "clearing filters stays within the Dates family");
+  await shop.reload({ waitUntil: "domcontentloaded" });
+  await barhi().waitFor();
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1);
+  assert.equal(await shopFilters.getByLabel("Fresh Fish", { exact: true }).count(), 0);
+  log("real admin-created products appear under the parent and assigned filter, not a sibling; clearing and reload stay scoped");
+
+  await shop.close(); await openAdmin();
+  await categoriesPanel.getByRole("button", { name: "Hide Barhi", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === created.id && entry.visible === false), "hide category");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await barhi().count(), 0);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 0, "hidden child's product must be hidden too");
+  await ready(shop, `/grocery?category=${encodeURIComponent(created.id)}`);
+  assert.equal(await shop.getByRole("region", { name: "Dates subcategories" }).count(), 0);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 0);
+  await shop.close(); await openAdmin();
+  await categoriesPanel.getByRole("button", { name: "Show Barhi", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === created.id && entry.visible === true), "show category");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await barhi().count(), 1);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1);
+  log("hiding/showing a child immediately controls its category filter and public products");
+
+  await shop.close(); await openAdmin();
+  let barhiRow = categoriesPanel.locator("li").filter({ hasText: "Barhi" }).first();
+  await barhiRow.getByRole("button", { name: "Edit", exact: true }).click();
+  await categoryForm.getByLabel("Show in category navigation").uncheck();
+  await categoryForm.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === created.id && entry.showInNavigation === false), "suppress category navigation");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await barhi().count(), 1, "navigation visibility alone must not hide a visible category filter");
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1, "navigation visibility alone must not hide a published product");
+  await shop.getByRole("button", { name: "Browse All Categories" }).click();
+  assert.equal(await shop.locator("#category-mega-menu").getByText("Barhi", { exact: true }).count(), 0, "navigation-only visibility still hides the menu item");
+  await shop.close(); await openAdmin();
+  barhiRow = categoriesPanel.locator("li").filter({ hasText: "Barhi" }).first();
+  await barhiRow.getByRole("button", { name: "Edit", exact: true }).click();
+  await categoryForm.getByLabel("New category name").fill("Barhi Select");
+  await categoryForm.getByLabel("Show in category navigation").check();
+  await categoryForm.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForDB((c) => c.products.find((entry) => entry.id === product.id && entry.categoryLabel === "Barhi Select"), "renamed product category label");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await shopFilters.getByLabel(/Dates › Barhi Select/).count(), 1);
+  assert.match(await shop.locator('main article[data-product-id]').first().innerText(), /Barhi Select/);
+  log("navigation-only visibility does not hide stock; renaming updates the child and its product label");
+
+  await shop.close(); await openAdmin();
+  await categoriesPanel.getByRole("button", { name: "Hide Dates", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === "dates" && entry.visible === false), "hide parent");
+  await page.close(); await openShop("/");
+  assert.equal(await shop.locator('nav[aria-label="Primary"]').getByRole("link", { name: "Dates", exact: true }).count(), 0);
+  await ready(shop, "/grocery?category=dates");
+  assert.equal(await shop.getByRole("region", { name: "Dates subcategories" }).count(), 0);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 0);
+  const hiddenScope = await shop.goto(`${base}/grocery?scope=dates`, { waitUntil: "domcontentloaded" });
+  assert.equal(hiddenScope.status(), 404, "a stale explicit family scope must not widen to an unrelated department");
+  await shop.close(); await openAdmin();
+  await categoriesPanel.getByRole("button", { name: "Show Dates", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === "dates" && entry.visible === true), "show parent");
+  log("a hidden parent removes the primary link, children and their products");
+
+  // The Dates presentation must not depend on occupying the one top-nav slot.
+  // Exercise both settings through the real admin form and persist the change.
+  await ready(page, "/admin/catalogue/taxonomy");
+  const datesRow = () => categoriesPanel.locator("li").filter({ has: page.getByRole("button", { name: "Hide Dates", exact: true }) });
+  await datesRow().getByRole("button", { name: "Edit", exact: true }).click();
+  assert.equal(await categoryForm.getByLabel("Show subcategories as filters only").isChecked(), true);
+  await categoryForm.getByLabel("Feature in primary navigation").uncheck();
+  assert.equal(await categoryForm.getByLabel("Show subcategories as filters only").isChecked(), true);
+  await categoryForm.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === "dates" && entry.showInPrimaryNavigation === false && entry.familyFiltersOnly === true), "preserve filters-only setting");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await shop.getByRole("region", { name: "Dates subcategories" }).count(), 0);
+  assert.equal(await shopFilters.getByLabel(/Dates › Barhi Select/).count(), 1);
+  assert.equal(await shop.locator('main article[data-product-id]').count(), 1);
+  await shop.close(); await openAdmin();
+  await datesRow().getByRole("button", { name: "Edit", exact: true }).click();
+  await categoryForm.getByLabel("Show subcategories as filters only").uncheck();
+  await categoryForm.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === "dates" && entry.familyFiltersOnly === false), "restore ordinary category cards");
+  await page.close(); await openShop("/grocery?category=dates");
+  assert.equal(await shop.getByRole("region", { name: "Dates subcategories" }).count(), 1, "admin can restore ordinary category cards");
+  await shop.close(); await openAdmin();
+  await datesRow().getByRole("button", { name: "Edit", exact: true }).click();
+  await categoryForm.getByLabel("Feature in primary navigation").check();
+  await categoryForm.getByRole("button", { name: "Save", exact: true }).click();
+  await waitForDB((c) => c.categories.find((entry) => entry.id === "dates" && entry.showInPrimaryNavigation === true && entry.familyFiltersOnly === true), "restore primary category");
+  log("filters-only presentation persists outside the top-nav slot and remains admin configurable");
+  assert.deepEqual(pageErrors, []);
+  await guest.close(); await adminContext.close();
+  console.log("ALL DATE VARIETY CHECKS PASSED");
+} finally {
+  await browser.close();
+}

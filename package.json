@@ -1,0 +1,63 @@
+{
+  "name": "grocery-website",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "local:check": "node scripts/local-doctor.mjs",
+    "test:unit": "node --conditions=react-server --import tsx --test tests/unit/*.test.ts",
+    "test:mongo:local": "node --conditions=react-server --import tsx tests/isolated-mongo-test.ts",
+    "test:e2e:payment": "node tests/payment-review-e2e.mjs",
+    "test:e2e:checkout-privacy": "node tests/checkout-privacy-e2e.mjs",
+    "test:e2e:customer-security": "node tests/customer-security-e2e.mjs",
+    "test:e2e:inventory": "node tests/inventory-admin-e2e.mjs",
+    "test:e2e:admin-ui": "node --import tsx tests/admin-ui-e2e.mjs",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:e2e:auth": "node tests/unified-auth-e2e.mjs",
+    "test:e2e:navigation": "node tests/primary-navigation-e2e.mjs",
+    "test:e2e:dates": "node tests/date-varieties-e2e.mjs",
+    "test:e2e:storefront-scope": "node tests/storefront-scope-e2e.mjs",
+    "test:e2e:storefront-scroll": "node tests/storefront-scroll-e2e.mjs",
+    "test:e2e:google": "node tests/google-oauth-smoke.mjs"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.9.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.15.0",
+    "google-auth-library": "^10.9.1",
+    "lucide-react": "^0.468.0",
+    "mongodb": "^6.22.0",
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.5",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@tailwindcss/postcss": "^4.1.13",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.4.6",
+    "playwright": "^1.65.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.1.13",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "overrides": {
+    "@vercel/cli-config": {
+      "zod": "^4.6.7"
+    }
+  }
+}
