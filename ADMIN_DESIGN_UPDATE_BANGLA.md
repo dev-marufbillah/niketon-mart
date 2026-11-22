@@ -15,7 +15,7 @@
 
 ## যাচাই ও সীমা
 
-- TypeScript ও **৬৬/৬৬ unit test** পাস; lint-এ **০ error, ১৪ warning**। Isolated production build-এর ফল `IMPLEMENTATION_REPORT.md`-এ দেখুন। `npm audit`: **৮টি moderate advisory**; জোর করে breaking update করা হয়নি।
+- এই UI audit-এর সময় TypeScript ও **৬৬/৬৬ unit test** পাস; lint-এ **০ error, ১৪ warning** ছিল এবং `npm audit`-এ **৮টি moderate advisory** পাওয়া গিয়েছিল। পরে 2026-11-23-এ dependency lockfile update করে latest audit-এ ০ vulnerability পাওয়া গেছে; বর্তমান verification `IMPLEMENTATION_REPORT.md`-এ আছে।
 - নতুন `npm run test:e2e:admin-ui`: disposable local file store-এ dashboard ও owner navigation, search, orders filter, settings save, mobile reorder, সীমিত role ও সরাসরি URL guard, sign out এবং keyboard drawer পরীক্ষা। Dashboard, orders, products, inventory, customers, hero slides ও settings—এই ৭টি screen-এ ৩২০, ৩৯০, ৭৬৮ ও ১৪৪০ px-এ পুরো পৃষ্ঠার horizontal overflow পরীক্ষা হয়েছে।
 - `npm run test:e2e:inventory`: disposable store-এ product save, stale inventory rejection ও refresh, stock adjustment/ledger এবং variation-hold-এর ৫টি focused group পাস। এটি বাস্তব MongoDB transaction বা production-এর পরীক্ষা নয়।
 - সম্পূর্ণ admin/storefront browser suite, screen reader audit, Atlas, বাস্তব email/Google/Blob/payment, multi-instance concurrency ও live migration পরীক্ষা করা হয়নি। আগের checkout/cancellation hold ও অন্যান্য বাকি কাজ অপরিবর্তিত।

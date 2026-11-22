@@ -22,7 +22,7 @@ import { changeCustomerPasswordInDatabase, consumeCustomerEmailVerificationInDat
 import { sameSessionVersion } from "../src/lib/auth/session-version";
 import { mongoCompareFilter } from "../src/lib/db/mongo-cas";
 import type { Database, Row } from "../src/lib/db/types";
-import type { CheckoutInput, Order } from "../src/lib/repositories/orders";
+import type { CancellationReviewInput, CheckoutInput, Order } from "../src/lib/repositories/orders";
 import type { Product } from "../src/lib/types/domain";
 import type { ProductInput } from "../src/lib/catalogue/types";
 import { orderFinancialExpectation } from "../src/lib/weights/finance";
@@ -767,8 +767,8 @@ try {
   else assert((await db.get("products", "delete-race-product")) && /open order/i.test(deleteRace.errors[0]));
   report("product stock and ledger roll back on failure; deletion cannot win against an open or concurrent order");
 
-  // The owner selected manual review. Current orders lack a proven customer
-  // accounting contribution, so all online cancellations must fail closed.
+  // Cancellation requires authenticated staff review and explicit per-order
+  // coupon/customer decisions.
   await db.insert("products", { id: "cancel-product", name: "Synthetic return product", slug: "cancel-product", categoryId: "txn-category",
     categoryLabel: "Synthetic category", image: "/images/category-placeholder.svg", unit: "pc", price: 100, stock: 6,
     soldCount: 0, status: "active", visibility: "visible", options: [{ name: "Size", values: [
@@ -778,55 +778,99 @@ try {
     items: [{ productId: "cancel-product", quantity: 1, variantLabel: "Single" }] });
   const cancellable = await createOrderTransaction(db, cancelCheckout("cancel-race-key-01"));
   assert(cancellable.ok && cancellable.order.inventoryReservationVersion === 1 && cancellable.order.items[0].variantStockTracked);
-  const unauthorized = await cancelOrderTransaction(db, cancellable.order.id, { kind: "customer", customerId: "txn-shopper-b" });
-  const missing = await cancelOrderTransaction(db, "synthetic-missing-order", { kind: "customer", customerId: "txn-shopper-b" });
-  assert(!unauthorized.ok && !missing.ok && unauthorized.error === missing.error);
-  const beforeManualOrder = await db.get("orders", cancellable.order.id);
-  const beforeManualProduct = await db.get("products", "cancel-product");
-  const beforeManualCustomer = await db.get("customers", "txn-shopper-a");
-  const beforeManualLedger = await raw.collection("stock_movements").countDocuments();
-  const cancellations = await Promise.all(Array.from({ length: 6 }, () =>
-    cancelOrderTransaction(db, cancellable.order.id, { kind: "customer", customerId: "txn-shopper-a" })));
-  assert(cancellations.every((result) => !result.ok && /store review/i.test(result.error)));
-  const forgedStaff = await cancelOrderTransaction(db, cancellable.order.id, { kind: "staff", staffId: "txn-owner" });
-  assert(!forgedStaff.ok && /authenticated, permission-checked/i.test(forgedStaff.error));
-  assert.deepEqual(await db.get("orders", cancellable.order.id), beforeManualOrder);
-  assert.deepEqual(await db.get("products", "cancel-product"), beforeManualProduct);
-  assert.deepEqual(await db.get("customers", "txn-shopper-a"), beforeManualCustomer);
-  assert.equal(await raw.collection("stock_movements").countDocuments(), beforeManualLedger);
-  const generalCancel = await updateOrderStatus(cancellable.order.id, { status: "cancelled" });
-  assert(!generalCancel.ok && /manual review/i.test(generalCancel.error));
-  assert.deepEqual(await db.get("orders", cancellable.order.id), beforeManualOrder);
-  report("manual customer-accounting hold is read-only under retries; arbitrary staff IDs and general status cannot bypass it");
+  const staffActor = { id: "txn-owner", name: "Synthetic Owner" };
+  const cancellationReview = (order: Order, patch: Partial<CancellationReviewInput> = {}): CancellationReviewInput => ({
+    reviewedUpdatedAt: order.updatedAt,
+    note: "Reviewed synthetic cancellation evidence",
+    ...(order.customerId ? { customerDecision: "leave" as const } : {}),
+    ...(order.couponCode ? { couponDecision: "retain" as const } : {}),
+    ...patch,
+  });
+  const beforeCancelProduct = await db.get<Product>("products", "cancel-product");
+  const beforeCancelCustomer = await db.get("customers", "txn-shopper-a");
+  const missingDecision = await cancelOrderTransaction(db, cancellable.order.id, staffActor, {
+    reviewedUpdatedAt: cancellable.order.updatedAt, note: "Missing customer decision",
+  });
+  assert(!missingDecision.ok && /customer.*totals/i.test(missingDecision.error));
+  assert.deepEqual(await db.get("products", "cancel-product"), beforeCancelProduct);
+  assert.deepEqual(await db.get("customers", "txn-shopper-a"), beforeCancelCustomer);
+
+  const cancelled = await cancelOrderTransaction(db, cancellable.order.id, staffActor, cancellationReview(cancellable.order));
+  assert(cancelled.ok && cancelled.order.status === "cancelled");
+  assert(!JSON.stringify(cancelled.order).includes("Reviewed synthetic cancellation evidence"));
+  const cancellationRecord = await db.get<Row & { staffId?: string; customerDecision?: string }>(
+    "order_review_records", `${cancellable.order.id}:cancellation`,
+  );
+  assert.equal(cancellationRecord?.staffId, staffActor.id);
+  assert.equal(cancellationRecord?.customerDecision, "leave");
+  assert.equal((await db.get<Product>("products", "cancel-product"))?.stock, beforeCancelProduct!.stock! + 1);
+  assert.equal((await db.get<Product>("products", "cancel-product"))?.soldCount, beforeCancelProduct!.soldCount! - 1);
+  assert.deepEqual(await db.get("customers", "txn-shopper-a"), beforeCancelCustomer);
+  assert.equal(await raw.collection("stock_movements").countDocuments({ reason: "order-cancelled", reference: cancellable.order.number }), 1);
+  const repeatedCancel = await cancelOrderTransaction(db, cancellable.order.id, staffActor, cancellationReview(cancellable.order));
+  assert(!repeatedCancel.ok);
+  const generalCancel = await updateOrderStatus("unused-order-id", { status: "cancelled" });
+  assert(!generalCancel.ok && /permission-checked cancellation review/i.test(generalCancel.error));
+  report("staff cancellation explicitly records customer treatment and atomically restores reserved stock once");
+
+  const reconciledOrder = await createOrderTransaction(db, cancelCheckout("customer-reconciliation-review-key"));
+  assert(reconciledOrder.ok);
+  const customerBeforeReconcile = await db.get<Row & { updatedAt?: string }>("customers", "txn-shopper-a");
+  assert(customerBeforeReconcile?.updatedAt);
+  const reconciled = await cancelOrderTransaction(db, reconciledOrder.order.id, staffActor,
+    cancellationReview(reconciledOrder.order, {
+      customerDecision: "reconcile", expectedCustomerUpdatedAt: customerBeforeReconcile.updatedAt,
+      reconciledOrderCount: 17, reconciledTotalSpent: 4321.09,
+    }));
+  assert(reconciled.ok);
+  const reconciledRecord = await db.get<Row & { customerDecision?: string; reconciledOrderCount?: number }>(
+    "order_review_records", `${reconciledOrder.order.id}:cancellation`,
+  );
+  assert.equal(reconciledRecord?.customerDecision, "reconcile");
+  assert.equal(reconciledRecord?.reconciledOrderCount, 17);
+  assert.equal((await db.get("customers", "txn-shopper-a"))?.orderCount, 17);
+  assert.equal((await db.get("customers", "txn-shopper-a"))?.totalSpent, 4321.09);
+  report("customer totals change only to staff-entered, validated BDT values within the cancellation transaction");
 
   await db.insert("coupons", { id: "manual-review-coupon", code: "MANUAL10", description: "Synthetic manual review", type: "fixed", value: 10,
     minSubtotal: 0, maxDiscount: 0, usageLimit: 10, usedCount: 0, startsAt: "", endsAt: "", active: true, channels: [] });
   const couponOrder = await createOrderTransaction(db, { ...cancelCheckout("manual-coupon-review-key"), couponCode: "MANUAL10", expectedTotal: 90 });
   assert(couponOrder.ok);
-  const couponSnapshot = await db.get("coupons", "manual-review-coupon");
-  const couponOrderSnapshot = await db.get("orders", couponOrder.order.id);
-  const couponProductSnapshot = await db.get("products", "cancel-product");
-  const couponCustomerSnapshot = await db.get("customers", "txn-shopper-a");
-  const couponLedgerCount = await raw.collection("stock_movements").countDocuments();
-  const couponCancellation = await cancelOrderTransaction(db, couponOrder.order.id, { kind: "customer", customerId: "txn-shopper-a" });
-  assert(!couponCancellation.ok && /coupon order requires store review/i.test(couponCancellation.error));
-  assert.deepEqual(await db.get("coupons", "manual-review-coupon"), couponSnapshot);
-  assert.deepEqual(await db.get("orders", couponOrder.order.id), couponOrderSnapshot);
-  assert.deepEqual(await db.get("products", "cancel-product"), couponProductSnapshot);
-  assert.deepEqual(await db.get("customers", "txn-shopper-a"), couponCustomerSnapshot);
-  assert.equal(await raw.collection("stock_movements").countDocuments(), couponLedgerCount);
-  report("coupon cancellation requires manual review without changing coupon, stock, order, customer or ledger");
+  assert.equal((await db.get("coupons", "manual-review-coupon"))?.usedCount, 1);
+  const couponCancelled = await cancelOrderTransaction(db, couponOrder.order.id, staffActor,
+    cancellationReview(couponOrder.order, { couponDecision: "release" }));
+  assert(couponCancelled.ok);
+  assert.equal((await db.get<Row & { couponDecision?: string }>(
+    "order_review_records", `${couponOrder.order.id}:cancellation`,
+  ))?.couponDecision, "release");
+  assert.equal((await db.get("coupons", "manual-review-coupon"))?.usedCount, 0);
 
-  await db.update("orders", cancellable.order.id, { paymentStatus: "paid", payment: { type: "cod", mode: "offline", reference: "synthetic-paid-reference" } });
-  const paidBefore = await db.get("orders", cancellable.order.id);
-  const paidCancellation = await cancelOrderTransaction(db, cancellable.order.id, { kind: "customer", customerId: "txn-shopper-a" });
-  assert(!paidCancellation.ok && /payment needs manual review/i.test(paidCancellation.error));
-  assert.deepEqual(await db.get("orders", cancellable.order.id), paidBefore);
-  assert.deepEqual(await db.get("products", "cancel-product"), couponProductSnapshot);
-  report("paid cancellations remain held and never fabricate a refund");
+  const retainedCouponOrder = await createOrderTransaction(db, {
+    ...cancelCheckout("retain-coupon-review-key"), couponCode: "MANUAL10", expectedTotal: 90,
+  });
+  assert(retainedCouponOrder.ok);
+  const retainedCoupon = await cancelOrderTransaction(db, retainedCouponOrder.order.id, staffActor,
+    cancellationReview(retainedCouponOrder.order, { couponDecision: "retain" }));
+  assert(retainedCoupon.ok);
+  assert.equal((await db.get<Row & { couponDecision?: string }>(
+    "order_review_records", `${retainedCouponOrder.order.id}:cancellation`,
+  ))?.couponDecision, "retain");
+  assert.equal((await db.get("coupons", "manual-review-coupon"))?.usedCount, 1);
+  report("coupon use is released only after an explicit per-order decision; retaining it preserves the counter");
 
-  // Race the held cancellation with synthetic payment/dispatch field updates.
-  // This is NOT an end-to-end payment or real multi-instance action test.
+  const paidOrder = await createOrderTransaction(db, cancelCheckout("paid-cancellation-review-key"));
+  assert(paidOrder.ok);
+  await db.update("orders", paidOrder.order.id, {
+    paymentStatus: "paid", payment: { ...paidOrder.order.payment!, reference: "synthetic-paid-reference" },
+  });
+  const paidSnapshot = (await db.get<Order>("orders", paidOrder.order.id))!;
+  const paidCancellation = await cancelOrderTransaction(db, paidSnapshot.id, staffActor, cancellationReview(paidSnapshot));
+  assert(!paidCancellation.ok && /payment or refund/i.test(paidCancellation.error));
+  assert.deepEqual(await db.get("orders", paidSnapshot.id), paidSnapshot);
+  report("paid cancellations are blocked until an independently recorded refund exists");
+
+  // Race cancellation with synthetic payment/dispatch updates using the local
+  // replica set. This is not a real provider or multi-instance app test.
   for (const competingAction of ["payment", "dispatch"] as const) {
     const placed = await createOrderTransaction(db, cancelCheckout(`cancel-${competingAction}-race-key`));
     assert(placed.ok);
@@ -837,15 +881,47 @@ try {
       ? { paymentStatus: "paid", payment: { ...current.payment!, reference: "synthetic-evidence" }, updatedAt: new Date().toISOString() }
       : { status: "out_for_delivery", updatedAt: new Date().toISOString() };
     const [cancelResult, adminResult] = await Promise.all([
-      cancelOrderTransaction(db, current.id, { kind: "customer", customerId: "txn-shopper-a" }),
+      cancelOrderTransaction(db, current.id, staffActor, cancellationReview(current)),
       db.compareAndUpdate<Order>("orders", current.id,
         competingAction === "payment" ? paymentReviewExpectation(current) : orderFinancialExpectation(current), competingPatch),
     ]);
-    assert(!cancelResult.ok && adminResult);
-    assert.equal((await db.get("products", "cancel-product"))?.stock, stockBefore);
-    assert.equal(await raw.collection("stock_movements").countDocuments({ reason: "order-cancelled", reference: current.number }), 0);
+    assert.notEqual(cancelResult.ok, Boolean(adminResult));
+    assert.equal((await db.get("products", "cancel-product"))?.stock, stockBefore + (cancelResult.ok ? 1 : 0));
+    assert.equal(await raw.collection("stock_movements").countDocuments({ reason: "order-cancelled", reference: current.number }), cancelResult.ok ? 1 : 0);
   }
-  report("manual cancellation hold remains read-only while synthetic payment/dispatch updates race it");
+  report("cancellation transaction races safely with payment and dispatch without double-restoring stock");
+
+  const faultedOrder = await createOrderTransaction(db, {
+    ...cancelCheckout("cancel-rollback-test-key"), couponCode: "MANUAL10", expectedTotal: 90,
+  });
+  assert(faultedOrder.ok);
+  const rollbackSnapshot = async () => JSON.stringify(await Promise.all(
+    ["orders", "products", "stock_movements", "customers", "coupons", "order_review_records"].map((name) =>
+      raw.collection(name).find().sort({ id: 1 }).toArray()),
+  ));
+  const beforeCancelRollback = await rollbackSnapshot();
+  const customerBeforeRollback = await db.get<Row & { updatedAt?: string }>("customers", "txn-shopper-a");
+  assert(customerBeforeRollback?.updatedAt);
+  const cancellationFault: Database = {
+    ...db,
+    withTransaction<T>(work: (transaction: Database) => Promise<T>) {
+      return db.withTransaction!(async (tx) => work({
+        ...tx,
+        async insert<U extends Row>(name: string, row: Omit<U, "id"> & { id?: string }) {
+          if (name === "stock_movements") throw new Error("synthetic cancellation ledger failure");
+          return tx.insert<U>(name, row);
+        },
+      }));
+    },
+  };
+  await assert.rejects(cancelOrderTransaction(cancellationFault, faultedOrder.order.id, staffActor,
+    cancellationReview(faultedOrder.order, {
+      couponDecision: "release", customerDecision: "reconcile",
+      expectedCustomerUpdatedAt: customerBeforeRollback.updatedAt,
+      reconciledOrderCount: 99, reconciledTotalSpent: 9999,
+    })), /synthetic cancellation ledger failure/);
+  assert.equal(await rollbackSnapshot(), beforeCancelRollback);
+  report("injected cancellation ledger failure rolls back inventory, coupon, customer and order writes");
 
   const mutableEnv = process.env as Record<string, string | undefined>;
   const previousNodeEnv = mutableEnv.NODE_ENV;
@@ -854,7 +930,7 @@ try {
     const held = await createOrder(checkout("production-held-key"));
     assert(!held.ok && held.errors.some((error) => /temporarily unavailable/i.test(error)));
     const heldCancellation = await updateOrderStatus("unused-production-test-id", { status: "cancelled" });
-    assert(!heldCancellation.ok && /manual review/i.test(heldCancellation.error));
+    assert(!heldCancellation.ok && /permission-checked cancellation review/i.test(heldCancellation.error));
   } finally {
     if (previousNodeEnv === undefined) delete mutableEnv.NODE_ENV;
     else mutableEnv.NODE_ENV = previousNodeEnv;

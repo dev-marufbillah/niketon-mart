@@ -2,15 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AdminPageHeader } from "@/components/admin/page-header";
+import { CancellationReviewForm } from "@/components/admin/cancellation-review-form";
 import { OrderStatusForm } from "@/components/admin/order-status-form";
 import { PaymentVerifyForm } from "@/components/admin/payment-verify-form";
 import { requirePermission } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
-import { weightAdjustmentHoldReason } from "@/lib/weights/finance";
-import { paymentReviewFingerprint } from "@/lib/payments/review-snapshot";
-import { getOrder, orderStatuses, paymentStatuses, channelLabels } from "@/lib/repositories/orders";
+import { hasUnresolvedWeights, weightAdjustmentHoldReason } from "@/lib/weights/finance";
+import { hasValidPaymentReviewAmount, paymentReviewFingerprint } from "@/lib/payments/review-snapshot";
+import { getOrder, getOrderCancellationReview, orderStatuses, paymentStatuses, channelLabels } from "@/lib/repositories/orders";
+import { getCustomer } from "@/lib/repositories/customers";
 import { getDeliveryPartners } from "@/lib/repositories/operations";
 import { formatPrice, formatDate } from "@/lib/utils/format";
+import { isSafeTakaAmount } from "@/lib/utils/currency";
 import { PreparationLine } from "@/components/checkout/preparation-line";
 import { WeightPanel } from "@/components/admin/weight-panel";
 import { formatGrams } from "@/lib/weights/weight";
@@ -24,8 +27,40 @@ export default async function AdminOrderDetailPage({ params }: { params: Promise
   const { id } = await params;
   const [order, partners] = await Promise.all([getOrder(id), getDeliveryPartners()]);
   if (!order) notFound();
+  const customerSnapshot = order.customerId && can(admin, "customers.manage")
+    ? await getCustomer(order.customerId)
+    : null;
+  const mayViewCancellationReview = can(admin, "orders.manage") &&
+    can(admin, "payments.manage") &&
+    (!order.customerId || can(admin, "customers.manage")) &&
+    (!order.couponCode || can(admin, "marketing.manage"));
+  const cancellationReview = order.status === "cancelled" && mayViewCancellationReview
+    ? await getOrderCancellationReview(order.id)
+    : null;
 
   const statusMeta = orderStatuses.find((entry) => entry.value === order.status);
+  const cancellationStatusOpen = ["pending", "confirmed", "processing"].includes(order.status);
+  const cancellationPaymentReady =
+    (order.payment?.mode === "offline" && order.paymentStatus === "unpaid") ||
+    (order.paymentStatus === "refunded" && Boolean(order.payment?.refundReference && order.payment.refundedAt));
+  const cancellationFinancialReady = order.currency === "BDT" && hasValidPaymentReviewAmount(order);
+  const cancellationHold = !cancellationStatusOpen
+    ? "Only pending, confirmed or processing orders can be reviewed for cancellation."
+    : order.inventoryReservationVersion !== 1
+      ? "This historical order has no verified stock reservation snapshot."
+      : order.customerId && can(admin, "customers.manage") && !customerSnapshot
+        ? "The linked customer record is missing and needs review."
+      : !cancellationFinancialReady
+        ? "The order's BDT financial snapshot is incomplete or invalid."
+      : !cancellationPaymentReady
+        ? "Payment or refund must be independently reconciled before cancellation."
+        : hasUnresolvedWeights(order)
+          ? "Complete the weight review before cancelling this order."
+          : null;
+  const canReviewCancellation = can(admin, "orders.manage") &&
+    can(admin, "payments.manage") &&
+    (!order.customerId || can(admin, "customers.manage")) &&
+    (!order.couponCode || can(admin, "marketing.manage"));
 
   return (
     <div>
@@ -117,10 +152,37 @@ export default async function AdminOrderDetailPage({ params }: { params: Promise
               order={{ id: order.id, status: order.status, deliveryPartnerId: order.deliveryPartnerId }}
               partners={partners.map((partner) => ({ id: partner.id, name: partner.name, zone: partner.zone }))}
             />
-            <p className="mt-3 text-[11.5px] leading-relaxed text-ink-400">
-              Online cancellation is paused in all environments. Coupon use and customer totals need manual review; this form does not cancel orders or perform refunds.
-            </p>
           </section> : null}
+          {cancellationStatusOpen ? (
+            <section className="rounded-2xl bg-white p-4 ring-1 ring-line">
+              <h2 className="mb-2 text-[14px] font-extrabold text-ink-900">Cancellation review</h2>
+              {cancellationHold ? (
+                <p className="rounded-xl bg-accent-100 px-3 py-2 text-[11.5px] leading-relaxed text-ink-700">
+                  {cancellationHold} No order, inventory, coupon or customer record was changed.
+                </p>
+              ) : canReviewCancellation ? (
+                <CancellationReviewForm
+                  orderId={order.id}
+                  updatedAt={order.updatedAt}
+                  customerId={order.customerId}
+                  customerSnapshot={customerSnapshot ? {
+                    orderCount: Number.isSafeInteger(customerSnapshot.orderCount) && customerSnapshot.orderCount >= 0
+                      ? customerSnapshot.orderCount
+                      : null,
+                    totalSpent: isSafeTakaAmount(customerSnapshot.totalSpent)
+                      ? customerSnapshot.totalSpent
+                      : null,
+                    updatedAt: customerSnapshot.updatedAt,
+                  } : undefined}
+                  couponCode={order.couponCode}
+                />
+              ) : (
+                <p className="rounded-xl bg-accent-100 px-3 py-2 text-[11.5px] leading-relaxed text-ink-700">
+                  This review requires orders.manage, payments.manage and, when applicable, customers.manage and marketing.manage.
+                </p>
+              )}
+            </section>
+          ) : null}
         </div>
 
         <div className="space-y-3">
@@ -272,6 +334,29 @@ export default async function AdminOrderDetailPage({ params }: { params: Promise
               ))}
             </ol>
           </section>
+          {cancellationReview ? (
+            <section className="rounded-2xl bg-white p-4 ring-1 ring-line">
+              <h2 className="mb-2 text-[14px] font-extrabold text-ink-900">Private cancellation review</h2>
+              <p className="text-[11.5px] text-ink-500">
+                Reviewed by {cancellationReview.staffName} · {formatDate(cancellationReview.at)}
+              </p>
+              <p className="mt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-ink-700">
+                {cancellationReview.note}
+              </p>
+              {cancellationReview.couponDecision ? (
+                <p className="mt-2 text-[11.5px] text-ink-600">
+                  Coupon use: {cancellationReview.couponDecision}
+                </p>
+              ) : null}
+              {cancellationReview.customerDecision ? (
+                <p className="mt-1 text-[11.5px] text-ink-600">
+                  Customer totals: {cancellationReview.customerDecision === "reconcile"
+                    ? `${cancellationReview.reconciledOrderCount} orders · ${formatPrice(cancellationReview.reconciledTotalSpent ?? 0)} BDT entered by staff`
+                    : "left unchanged after review"}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
         </div>
       </div>
     </div>

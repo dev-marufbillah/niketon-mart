@@ -2,9 +2,9 @@
 
 ## Release status: source handover, not live-order ready
 
-This source was reconstructed from a ZIP and has **not** been deployed. Production checkout remains held. Online cancellation is held in all environments because the owner selected manual review for coupon orders and uncertain customer accounting; no permission-checked in-app staff review, reconciliation or refund workflow is complete. Do not remove these holds without the missing work, real-service staging and independent review.
+This source was reconstructed from a ZIP and has **not** been deployed. Production checkout remains held. A permission-checked admin cancellation-review workflow now supports eligible new offline orders with explicit coupon/customer decisions and transactional stock/account updates, but its latest Mongo transaction tests and real-service staging have not been run. Customer self-service cancellation, SSLCommerz integration, and in-app money movement/refunds remain unavailable. Do not remove checkout holds without sandbox integration, real-service staging and independent review.
 
-Vercel project metadata identified `dev-marufbillah/niketon-mart` `main` at `892500c4d5a335dd34ecbc9ee5680f26f40dd944`. Read-only structural comparison found a substantially different Better Auth/Mongoose application, database schema and remote-only features. It was not a semantic or migration audit, and no integration/merge was performed. Do not replace remote `main` or connect this source to its live database. See `docs/GITHUB_MAIN_COMPARISON.md`. No Git push, Vercel settings change, deployment, Atlas write, real-service staging or backup/restore test was performed. Git push must precede any Vercel settings change or deployment.
+Vercel project metadata identified `dev-marufbillah/niketon-mart` `main` at `892500c4d5a335dd34ecbc9ee5680f26f40dd944`. Read-only structural comparison found a substantially different Better Auth/Mongoose application, database schema and remote-only features. It was not a semantic or migration audit, and no integration/merge was performed. Do not replace remote `main` or connect this source to its live database. See `docs/GITHUB_MAIN_COMPARISON.md`. The owner later reported a push; local Git status showed `main` tracking `origin/main` and clean, but no remote fetch/verification was performed here. No Vercel settings change, deployment, Atlas write, real-service staging or backup/restore test was performed. Git push must precede any Vercel settings change or deployment.
 
 ## Changes in this source
 
@@ -23,18 +23,18 @@ Vercel project metadata identified `dev-marufbillah/niketon-mart` `main` at `892
 
 | Check | Result |
 |---|---|
-| Latest application typecheck and unit tests | Passed; **66/66 unit tests**. |
+| Latest application typecheck and unit tests | Passed on 2026-11-23; **69/69 unit tests**. |
 | Local MongoDB replica-set tests | **35 synthetic groups passed** on localhost MongoDB 7.0.16 before the subsequent Google-link/email-change race probe was added. They include rollback, stock/coupon races, retry conflicts, customer-security CAS and the startup tripwire. No Atlas connection. The newer probe, actual Mongo-backed browser/server-action races, distributed deployment and legacy data remain untested. |
 | Checkout privacy browser | **2/2 focused groups passed** using a disposable local file store: legacy unscoped data is not adopted, same-customer drafts survive reload and switching accounts does not show another customer's draft/address. |
 | Checkout browser | A focused local run passed preparation pricing, refusal of a forged expected total and ignoring browser-supplied prices. Another selected signed-in checkout test in that run timed out because its static synthetic email had been registered by an earlier failed run; the complete test remains to be rerun on a fresh store. An earlier run using `127.0.0.1` had blocked Next.js dev HMR/hydration and failed. This is not an end-to-end Mongo or production test. |
 | Customer-security browser | Three groups passed against synthetic file storage and mock mail; the run was interrupted during further source edits. Full browser coverage and real providers remain unverified. |
 | Admin design browser | **11 focused groups passed** on a disposable local file store, including owner/limited-role navigation, guards, settings save, mobile reorder and drawer keyboard behavior. Seven representative screens were checked for whole-page overflow at 320, 390, 768 and 1440px. This is not a complete admin or accessibility audit. |
 | Inventory admin browser | **5 focused groups passed** on another disposable local file store, including product save, stale stock rejection and displayed balance refresh, stock/ledger adjustments and variation hold. No real MongoDB action or production test. |
-| Lint | Current workspace: 0 errors and **14 warnings**. |
-| Isolated build | Separate source copy with synthetic file storage and external providers disabled passed. This is not production or Atlas certification. |
+| Lint | `npm run lint` passed on 2026-11-23 with no reported errors or warnings. |
+| Isolated build | Separate source copy with synthetic file storage and external providers disabled passed on 2026-11-23. This is not production or Atlas certification. |
 | Previous focused browser checks | Earlier source: Dates **9**, storefront scope **6**, scroll/navigation **8**, selected admin-security **6** and category/media **5** groups passed on disposable stores. Real Google, Blob, email and payment services were not tested. |
 | Full browser suite | No complete current pass: earlier full run passed 16/30; a later attempt stopped after failures/timeouts. Focused reruns do not prove the whole suite passes. |
-| npm audit | Most recent run: **8 moderate**, 0 high/critical advisories; no unreviewed forced dependency change. |
+| npm audit | On 2026-11-23, `npm audit fix` updated the lockfile dependency tree; `npm audit` and `npm audit --omit=dev` both reported **0 vulnerabilities**. Typecheck, unit tests, lint and isolated build passed afterward. |
 
 ## Required before live ordering
 
@@ -42,7 +42,7 @@ Vercel project metadata identified `dev-marufbillah/niketon-mart` `main` at `892
 2. Obtain a private backup of live DB/media and prove a separate restore. Review identities, owner, historic orders, currency, coupon/customer accounting, indices and historical corporate data. Do not delete, relabel or silently merge anything without approval. Rotate the Mongo credential previously exposed in chat.
 3. Implement and independently review a permission-checked manual cancellation/reconciliation/refund process. Complete checkout and race handling; test actual action flows and failures on an isolated staging replica set with multiple instances. Review variation-price displays, historical data and payment flows. Keep current holds.
 4. After an approved non-force Git push, the owner configures Vercel/Google/Blob/Resend secrets personally and separately tests real services. Provider keys alone do not create a payment gateway. Do not send secrets in chat or commit them.
-5. Run `npm ci`, `npm run typecheck`, `npm run test:unit`, `npm run lint`, `npm audit`, isolated `npm run build`, and the guarded browser/Mongo test suites; investigate outstanding failures and advisories. Configure real products, images, prices, stock, tax, delivery and legal/contact information.
+5. Before release, rerun `npm ci`, `npm run typecheck`, `npm run test:unit`, `npm run lint`, `npm audit`, isolated `npm run build`, and the guarded browser/Mongo test suites. The local typecheck, 69 unit tests, lint, audit and isolated build passed on 2026-11-23; the complete browser suite and real-service/Mongo staging remain outstanding. Configure real products, images, prices, stock, tax, delivery and legal/contact information.
 
 ## Private data
 

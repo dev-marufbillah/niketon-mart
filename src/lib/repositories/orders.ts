@@ -129,6 +129,19 @@ export type OrderPayment = {
   refundedBy?: string;
 };
 
+export type OrderCancellationReview = {
+  id: string;
+  orderId: string;
+  at: string;
+  staffId: string;
+  staffName: string;
+  note: string;
+  couponDecision?: "retain" | "release";
+  customerDecision?: "leave" | "reconcile";
+  reconciledOrderCount?: number;
+  reconciledTotalSpent?: number;
+};
+
 export type Order = Row & {
   number: string;
   /** Currency is snapshotted for historical integrity; never reinterpret a legacy order. */
@@ -787,68 +800,102 @@ export async function getOrderByNumber(number: string) {
   return rows[0] ?? null;
 }
 
-/**
- * Experimental cancellation primitive, intentionally NOT wired to a route.
- * The caller must derive the principal from a verified server session and
- * enforce staff permissions; browser-supplied identities are never sufficient.
- * It only covers new transaction-reserved, unpaid offline orders. The owner
- * selected manual review for coupon use and uncertain customer aggregates.
- * Because this source cannot yet prove/reconcile customer contributions, the
- * manual-review gate below currently holds ALL cancellations, before writes.
- * It does not perform refunds, release coupons, or change customer summaries.
- * Do not remove the gate without a reviewed per-order staff workflow, race and
- * independent integration review.
- */
-export type CancellationPrincipal =
-  | { kind: "customer"; customerId: string }
-  | { kind: "staff"; staffId: string };
-type CancellationResult = { ok: true; order: Order } | { ok: false; error: string };
+export type CancellationReviewInput = {
+  reviewedUpdatedAt: string;
+  expectedCustomerUpdatedAt?: string;
+  note: string;
+  couponDecision?: "retain" | "release";
+  customerDecision?: "leave" | "reconcile";
+  reconciledOrderCount?: number;
+  reconciledTotalSpent?: number;
+};
+export type CancellationResult = { ok: true; order: Order } | { ok: false; error: string };
 class CancellationRejected extends Error {
   constructor(readonly reason: string) { super("Cancellation validation failed"); }
 }
 
-/** The owner requested manual review. An order's current customer aggregate
- * contribution and coupon history are not proven by this version's records.
- * Returning a hold rather than guessing is required even in local staging. */
-function cancellationManualReviewHold(order: Order): string | null {
-  if (typeof order.couponCode === "string" && order.couponCode.trim()) {
-    return "This coupon order requires store review before cancellation. No order, stock or accounting was changed.";
-  }
-  return "Customer order totals require store review before cancellation. No order, stock or accounting was changed.";
-}
-
+/** Performs a reviewed cancellation and all dependent record updates atomically. */
 export async function cancelOrderTransaction(
   db: Database,
   id: string,
-  principal: CancellationPrincipal,
+  staff: { id: string; name: string },
+  review: CancellationReviewInput,
 ): Promise<CancellationResult> {
   if (db.driver !== "mongo" || !db.withTransaction || !db.orderTransactionIndexesReady) {
-    return { ok: false, error: "Transactional cancellation is not available." };
+    return { ok: false, error: "A transaction-capable MongoDB database is required for cancellation review." };
   }
-  // There is currently no verified staff-session capability for this internal
-  // primitive. Never treat a caller-provided staff ID as authorization.
-  if (principal.kind === "staff") {
-    return { ok: false, error: "Staff cancellation requires an authenticated, permission-checked review workflow." };
+  if (!staff.id.trim() || !staff.name.trim()) {
+    return { ok: false, error: "An authenticated staff identity is required for cancellation review." };
+  }
+  if (review.note.trim().length < 8 || review.note.trim().length > 500) {
+    return { ok: false, error: "Enter a review note between 8 and 500 characters." };
   }
   try {
     return await db.withTransaction(async (tx) => {
       const order = await tx.get<Order>("orders", id);
-      // Do not reveal whether another customer's order exists.
-      if (!order || order.customerWasAuthenticated !== true || order.customerId !== principal.customerId) {
-        throw new CancellationRejected("That order is not available on this account.");
+      if (!order) throw new CancellationRejected("That order is not available for review.");
+      if (await tx.get<OrderCancellationReview & Row>("order_review_records", `${id}:cancellation`)) {
+        throw new CancellationRejected("A cancellation review record already exists for this order.");
+      }
+      if (order.updatedAt !== review.reviewedUpdatedAt) {
+        throw new CancellationRejected("The order changed after you opened the review. Refresh and check it again.");
       }
       if (order.status === "cancelled") throw new CancellationRejected("This order is already cancelled.");
       if (!["pending", "confirmed", "processing"].includes(order.status)) {
-        throw new CancellationRejected("This order is closed or already with the courier. Contact the store.");
+        throw new CancellationRejected("This order is closed or already with the courier.");
       }
-      if (order.paymentStatus !== "unpaid" || order.payment?.mode !== "offline") {
-        throw new CancellationRejected("Payment needs manual review before cancellation. Contact the store.");
+      if (order.currency !== "BDT" || !hasValidPaymentReviewAmount(order)) {
+        throw new CancellationRejected("This order's financial snapshot needs review before cancellation.");
+      }
+      const unpaidOffline = order.payment?.mode === "offline" && order.paymentStatus === "unpaid";
+      const refundRecorded = order.paymentStatus === "refunded" &&
+        Boolean(order.payment?.refundReference?.trim() && order.payment.refundedAt);
+      if (!unpaidOffline && !refundRecorded) {
+        throw new CancellationRejected("Payment or refund must be independently reconciled before cancellation.");
+      }
+      if (hasUnresolvedWeights(order)) {
+        throw new CancellationRejected("Complete the weight review before cancelling this order.");
       }
       if (order.inventoryReservationVersion !== 1 || !Array.isArray(order.items) || !order.items.length) {
         throw new CancellationRejected("This order's historical stock reservation needs manual review.");
       }
-      const hold = cancellationManualReviewHold(order);
-      if (hold) throw new CancellationRejected(hold);
+      if (order.couponCode && !["retain", "release"].includes(review.couponDecision ?? "")) {
+        throw new CancellationRejected("Choose whether this order's coupon use is retained or released.");
+      }
+      if (order.customerId && !["leave", "reconcile"].includes(review.customerDecision ?? "")) {
+        throw new CancellationRejected("Choose whether to retain or reconcile the customer's order totals.");
+      }
+      if (review.customerDecision === "reconcile" &&
+          (!Number.isSafeInteger(review.reconciledOrderCount) || (review.reconciledOrderCount ?? -1) < 0 ||
+           !isSafeTakaAmount(review.reconciledTotalSpent))) {
+        throw new CancellationRejected("Enter the verified customer order count and BDT total spent.");
+      }
+
+      const customer = order.customerId ? await tx.get<Row & { orderCount?: number; totalSpent?: number }>("customers", order.customerId) : null;
+      if (order.customerId && !customer) throw new CancellationRejected("The linked customer record needs review.");
+      if (review.customerDecision === "reconcile" && customer) {
+        if (!review.expectedCustomerUpdatedAt || customer.updatedAt !== review.expectedCustomerUpdatedAt) {
+          throw new CancellationRejected("The customer record changed after review. Refresh the customer details and reconcile again.");
+        }
+        const updatedCustomer = await tx.update("customers", customer.id, {
+          orderCount: review.reconciledOrderCount,
+          totalSpent: review.reconciledTotalSpent,
+          updatedAt: new Date().toISOString(),
+        });
+        if (!updatedCustomer) throw new CancellationRejected("The customer record changed. Refresh and try again.");
+      }
+
+      if (order.couponCode && review.couponDecision === "release") {
+        const coupons = await tx.list<Row & { code?: string; usedCount?: number }>("coupons", {
+          where: { code: order.couponCode.trim().toUpperCase() },
+        });
+        if (coupons.length !== 1 || !Number.isSafeInteger(coupons[0].usedCount) || (coupons[0].usedCount ?? 0) < 1) {
+          throw new CancellationRejected("Coupon usage cannot be safely released; retain it or reconcile the coupon record.");
+        }
+        const updatedCoupon = await tx.update("coupons", coupons[0].id, { usedCount: coupons[0].usedCount! - 1 });
+        if (!updatedCoupon) throw new CancellationRejected("The coupon changed. Refresh and try again.");
+      }
+
       const byProduct = new Map<string, OrderItem[]>();
       for (const item of order.items) {
         if (!item.productId || !Number.isSafeInteger(item.quantity) || item.quantity < 1 ||
@@ -878,14 +925,19 @@ export async function cancelOrderTransaction(
         }
         restorations.push({ product, items, quantity, balance: product.stock! + quantity, options });
       }
+
       const now = new Date().toISOString();
-      const actor = `customer:${principal.customerId}`;
+      const actor = `admin:${staff.name}`;
       const updated = await tx.update<Order>("orders", id, {
         status: "cancelled",
-        timeline: [...order.timeline, { at: now, status: "cancelled", note: "Cancelled; inventory restored.", actor }],
+        timeline: [...order.timeline, {
+          at: now, status: "cancelled",
+          note: "Cancelled after store review; inventory restored.",
+          actor: "store",
+        }],
         updatedAt: now,
       });
-      if (!updated) throw new CancellationRejected("The order changed. Refresh and contact the store.");
+      if (!updated) throw new CancellationRejected("The order changed. Refresh and try again.");
       for (const { product, items, quantity, balance, options } of restorations) {
         const saved = await tx.update<Product>("products", product.id, {
           stock: balance, soldCount: product.soldCount! - quantity,
@@ -899,12 +951,33 @@ export async function cancelOrderTransaction(
             balance: running, reason: "order-cancelled", reference: order.number, actor }, tx);
         }
       }
+      await tx.insert<OrderCancellationReview & Row>("order_review_records", {
+        id: `${id}:cancellation`,
+        orderId: id,
+        at: now,
+        staffId: staff.id,
+        staffName: staff.name,
+        note: review.note.trim(),
+        ...(order.couponCode ? { couponDecision: review.couponDecision } : {}),
+        ...(order.customerId ? {
+          customerDecision: review.customerDecision,
+          ...(review.customerDecision === "reconcile" ? {
+            reconciledOrderCount: review.reconciledOrderCount,
+            reconciledTotalSpent: review.reconciledTotalSpent,
+          } : {}),
+        } : {}),
+      });
       return { ok: true, order: updated };
     });
   } catch (error) {
     if (error instanceof CancellationRejected) return { ok: false, error: error.reason };
     throw error;
   }
+}
+
+export async function getOrderCancellationReview(orderId: string) {
+  const db = await ensureDatabase();
+  return db.get<OrderCancellationReview & Row>("order_review_records", `${orderId}:cancellation`);
 }
 
 export async function updateOrderStatus(
@@ -916,7 +989,7 @@ export async function updateOrderStatus(
   // general status path cannot do that review or restore stock atomically, so
   // refuse cancellation in every environment, before any database writes.
   if (patch.status === "cancelled") {
-    return { ok: false, error: "Online cancellation is unavailable. Contact the store for manual review; no changes were made." };
+    return { ok: false, error: "Use the permission-checked cancellation review workflow; no changes were made." };
   }
   const db = await ensureDatabase();
   const order = await getOrder(id);

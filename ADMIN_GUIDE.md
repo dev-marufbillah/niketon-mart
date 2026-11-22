@@ -36,7 +36,7 @@ The homepage Fresh Market section shows up to six in-stock products per selected
 
 ## Orders, weighing and payments
 
-**Production checkout and online cancellation are currently paused** while safe transactional stock/order/ledger handling is completed. Do not promise online ordering from this release until the hold is removed after testing and approval. Local test orders are not real orders.
+**Production checkout remains paused** pending provider integration and real-service staging. Customer self-service cancellation remains unavailable. Staff can review eligible new offline orders that are unpaid, or already have an independently completed and recorded refund; the action requires `orders.manage` and `payments.manage`, plus customer/coupon permissions when relevant. The reviewer must explicitly retain or release coupon usage and either leave customer totals unchanged or enter verified reconciled totals. Order, inventory, coupon/customer changes and the private review record commit in one MongoDB transaction. Paid/unrefunded, gateway-unpaid, historical, or otherwise unreconciled orders remain held. Local test orders are not real orders.
 
 For a variable-weight order, enter the actual grams on its admin order page. A lower weight may reduce a reconcilable unpaid total. A higher amount is a proposal: the customer reviews and approves the exact new total on their private order page. Staff may waive the increase but cannot approve it on the customer's behalf. Paid, transfer-awaiting-verification, historically incomplete or unreconciled orders are held for manual review. Tax, delivery and the original checkout discount are snapshotted; do not guess missing historical amounts.
 
